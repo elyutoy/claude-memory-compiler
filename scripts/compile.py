@@ -18,7 +18,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from config import AGENTS_FILE, CONCEPTS_DIR, CONNECTIONS_DIR, DAILY_DIR, KNOWLEDGE_DIR, now_iso
+from config import COMPILE_RULES_FILE, CONCEPTS_DIR, CONNECTIONS_DIR, DAILY_DIR, KNOWLEDGE_DIR, now_iso
 from utils import (
     file_hash,
     list_raw_files,
@@ -46,7 +46,7 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
     )
 
     log_content = log_path.read_text(encoding="utf-8")
-    schema = AGENTS_FILE.read_text(encoding="utf-8")
+    schema = COMPILE_RULES_FILE.read_text(encoding="utf-8")
     wiki_index = read_wiki_index()
 
     # Read existing articles for context

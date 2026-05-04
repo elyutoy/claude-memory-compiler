@@ -139,56 +139,6 @@ respond with exactly: FLUSH_OK
     return response
 
 
-COMPILE_AFTER_HOUR = 18  # 6 PM local time
-
-
-def maybe_trigger_compilation() -> None:
-    """If it's past the compile hour and today's log hasn't been compiled, run compile.py."""
-    import subprocess as _sp
-
-    now = datetime.now(timezone.utc).astimezone()
-    if now.hour < COMPILE_AFTER_HOUR:
-        return
-
-    # Check if today's log has already been compiled
-    today_log = f"{now.strftime('%Y-%m-%d')}.md"
-    compile_state_file = SCRIPTS_DIR / "state.json"
-    if compile_state_file.exists():
-        try:
-            compile_state = json.loads(compile_state_file.read_text(encoding="utf-8"))
-            ingested = compile_state.get("ingested", {})
-            if today_log in ingested:
-                # Already compiled today - check if the log has changed since
-                from hashlib import sha256
-                log_path = DAILY_DIR / today_log
-                if log_path.exists():
-                    current_hash = sha256(log_path.read_bytes()).hexdigest()[:16]
-                    if ingested[today_log].get("hash") == current_hash:
-                        return  # log unchanged since last compile
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    compile_script = SCRIPTS_DIR / "compile.py"
-    if not compile_script.exists():
-        return
-
-    logging.info("End-of-day compilation triggered (after %d:00)", COMPILE_AFTER_HOUR)
-
-    cmd = ["uv", "run", "--directory", str(ROOT), "python", str(compile_script)]
-
-    kwargs: dict = {}
-    if sys.platform == "win32":
-        kwargs["creationflags"] = _sp.CREATE_NEW_PROCESS_GROUP | _sp.DETACHED_PROCESS
-    else:
-        kwargs["start_new_session"] = True
-
-    try:
-        log_handle = open(str(SCRIPTS_DIR / "compile.log"), "a")
-        _sp.Popen(cmd, stdout=log_handle, stderr=_sp.STDOUT, cwd=str(ROOT), **kwargs)
-    except Exception as e:
-        logging.error("Failed to spawn compile.py: %s", e)
-
-
 def main():
     if len(sys.argv) < 3:
         logging.error("Usage: %s <context_file.md> <session_id>", sys.argv[0])
@@ -243,10 +193,6 @@ def main():
 
     # Clean up context file
     context_file.unlink(missing_ok=True)
-
-    # End-of-day auto-compilation: if it's past the compile hour and today's
-    # log hasn't been compiled yet, trigger compile.py in the background.
-    maybe_trigger_compilation()
 
     logging.info("Flush complete for session %s", session_id)
 

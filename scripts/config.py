@@ -14,13 +14,14 @@ REPORTS_DIR = ROOT_DIR / "reports"
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 HOOKS_DIR = ROOT_DIR / "hooks"
 AGENTS_FILE = ROOT_DIR / "AGENTS.md"
+COMPILE_RULES_FILE = ROOT_DIR / "COMPILE_RULES.md"
 
 INDEX_FILE = KNOWLEDGE_DIR / "index.md"
 LOG_FILE = KNOWLEDGE_DIR / "log.md"
 STATE_FILE = SCRIPTS_DIR / "state.json"
 
 # ── Timezone ───────────────────────────────────────────────────────────
-TIMEZONE = "America/Chicago"
+TIMEZONE = "Asia/Krasnoyarsk"
 
 
 def now_iso() -> str:

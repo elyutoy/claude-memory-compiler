@@ -27,8 +27,8 @@ KNOWLEDGE_DIR = ROOT / "knowledge"
 DAILY_DIR = ROOT / "daily"
 INDEX_FILE = KNOWLEDGE_DIR / "index.md"
 
-MAX_CONTEXT_CHARS = 20_000
-MAX_LOG_LINES = 30
+MAX_CONTEXT_CHARS = 8_000
+MAX_LOG_LINES = 15
 
 
 def get_recent_log() -> str:
