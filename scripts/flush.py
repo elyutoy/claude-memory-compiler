@@ -180,6 +180,14 @@ def main():
 
     logging.info("Flushing session %s: %d chars", session_id, len(context))
 
+    # Skip LLM call for very short sessions — nothing worth extracting
+    if len(context) < 500:
+        logging.info("Context too short (%d chars), skipping flush", len(context))
+        append_to_daily_log("FLUSH_OK - Session too short to flush", "Memory Flush")
+        save_flush_state({"session_id": session_id, "timestamp": time.time()})
+        context_file.unlink(missing_ok=True)
+        return
+
     # Run the LLM extraction
     response = asyncio.run(run_flush(context))
 
