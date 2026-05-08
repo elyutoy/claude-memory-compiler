@@ -127,35 +127,47 @@ Read the daily log above and compile it into wiki articles following the schema 
 """
 
     cost = 0.0
+    last_error = None
 
-    try:
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT_DIR),
-                system_prompt={"type": "preset", "preset": "claude_code"},
-                allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-                permission_mode="acceptEdits",
-                max_turns=30,
-            ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        pass  # compilation output - LLM writes files directly
-            elif isinstance(message, ResultMessage):
-                cost = message.total_cost_usd or 0.0
-                print(f"  Cost: ${cost:.4f}")
-    except Exception as e:
-        print(f"  Error: {e}")
-        return 0.0
+    for attempt in range(1, 4):
+        cost = 0.0
+        try:
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    cwd=str(ROOT_DIR),
+                    system_prompt={"type": "preset", "preset": "claude_code"},
+                    allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
+                    permission_mode="acceptEdits",
+                    max_turns=30,
+                ),
+            ):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            pass  # compilation output - LLM writes files directly
+                elif isinstance(message, ResultMessage):
+                    cost = message.total_cost_usd or 0.0
+                    print(f"  Cost: ${cost:.4f}")
+            last_error = None
+            break  # success
+        except Exception as e:
+            last_error = e
+            if attempt < 3:
+                import time as _time
+                print(f"  Attempt {attempt} failed: {e} — retrying in 10s...")
+                _time.sleep(10)
+            else:
+                print(f"  Error after 3 attempts: {e}")
 
-    # Update state
+    # Update state regardless of outcome so the file isn't retried on next cron
+    # unless it actually changes on disk.
     rel_path = log_path.name
     state.setdefault("ingested", {})[rel_path] = {
         "hash": file_hash(log_path),
         "compiled_at": now_iso(),
         "cost_usd": cost,
+        **({"error": str(last_error)} if last_error else {}),
     }
     state["total_cost"] = state.get("total_cost", 0.0) + cost
     save_state(state)

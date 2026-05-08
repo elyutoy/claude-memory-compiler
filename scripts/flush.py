@@ -116,25 +116,33 @@ respond with exactly: FLUSH_OK
 
     response = ""
 
-    try:
-        async for message in query(
-            prompt=prompt,
-            options=ClaudeAgentOptions(
-                cwd=str(ROOT),
-                allowed_tools=[],
-                max_turns=2,
-            ),
-        ):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response += block.text
-            elif isinstance(message, ResultMessage):
-                pass
-    except Exception as e:
-        import traceback
-        logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
-        response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
+    for attempt in range(1, 4):
+        response = ""
+        try:
+            async for message in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    cwd=str(ROOT),
+                    allowed_tools=[],
+                    max_turns=2,
+                ),
+            ):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            response += block.text
+                elif isinstance(message, ResultMessage):
+                    pass
+            break  # success
+        except Exception as e:
+            import traceback
+            if attempt < 3:
+                import time as _time
+                logging.warning("Agent SDK error (attempt %d/3): %s — retrying in 10s", attempt, e)
+                _time.sleep(10)
+            else:
+                logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
+                response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
 
     return response
 
