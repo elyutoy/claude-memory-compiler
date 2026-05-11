@@ -52,8 +52,10 @@ def slugify(text: str) -> str:
 # ── Wikilink helpers ──────────────────────────────────────────────────
 
 def extract_wikilinks(content: str) -> list[str]:
-    """Extract all [[wikilinks]] from markdown content."""
-    return re.findall(r"\[\[([^\]]+)\]\]", content)
+    """Extract all [[wikilinks]] from markdown content, ignoring code spans."""
+    # Strip inline code spans before scanning for links
+    stripped = re.sub(r"`[^`]+`", "", content)
+    return re.findall(r"\[\[([^\]]+)\]\]", stripped)
 
 
 def wiki_article_exists(link: str) -> bool:
@@ -69,6 +71,43 @@ def read_wiki_index() -> str:
     if INDEX_FILE.exists():
         return INDEX_FILE.read_text(encoding="utf-8")
     return "# Knowledge Base Index\n\n| Article | Summary | Compiled From | Updated |\n|---------|---------|---------------|---------|"
+
+
+def read_wiki_index_compact() -> str:
+    """Return a compact slug→summary list instead of the full index table.
+
+    Strips the Compiled From and Updated columns since compile.py only needs
+    to know what articles already exist and what they cover.
+    """
+    if not INDEX_FILE.exists():
+        return "(empty knowledge base)"
+    lines = INDEX_FILE.read_text(encoding="utf-8").splitlines()
+    entries = []
+    for line in lines:
+        if not line.startswith("| [["):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        # parts[0]="" parts[1]="[[slug]]" parts[2]="summary" ...
+        if len(parts) >= 3:
+            slug = parts[1]   # e.g. [[concepts/foo]]
+            summary = parts[2]
+            entries.append(f"- {slug} — {summary}")
+    return "\n".join(entries) if entries else "(empty knowledge base)"
+
+
+def load_relevant_articles(log_content: str) -> dict[str, str]:
+    """Pre-load existing articles whose slugs appear in the daily log.
+
+    Used by compile.py to provide article context without tool calls.
+    Returns {relative_path: full_content} for each matched article.
+    """
+    result: dict[str, str] = {}
+    for article in list_wiki_articles():
+        slug = article.stem  # e.g. "claude-memory-compiler"
+        if slug in log_content:
+            rel = str(article.relative_to(KNOWLEDGE_DIR)).replace("\\", "/").removesuffix(".md")
+            result[rel] = article.read_text(encoding="utf-8")
+    return result
 
 
 def read_all_wiki_content() -> str:

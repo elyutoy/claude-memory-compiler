@@ -23,8 +23,9 @@ from utils import (
     file_hash,
     list_raw_files,
     list_wiki_articles,
+    load_relevant_articles,
     load_state,
-    read_wiki_index,
+    read_wiki_index_compact,
     save_state,
 )
 
@@ -32,8 +33,66 @@ from utils import (
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
+def _parse_compilation_output(text: str) -> dict:
+    """Parse structured output from the LLM into articles, index entries, log entry."""
+    import re
+    articles = []
+    for m in re.finditer(
+        r'<article\s+path="([^"]+)"\s+action="([^"]+)">(.*?)</article>',
+        text,
+        re.DOTALL,
+    ):
+        articles.append({
+            "path": m.group(1).strip(),
+            "action": m.group(2).strip(),
+            "content": m.group(3).strip(),
+        })
+
+    index_entries = ""
+    m = re.search(r"<index_entries>(.*?)</index_entries>", text, re.DOTALL)
+    if m:
+        index_entries = m.group(1).strip()
+
+    log_entry = ""
+    m = re.search(r"<log_entry>(.*?)</log_entry>", text, re.DOTALL)
+    if m:
+        log_entry = m.group(1).strip()
+
+    return {"articles": articles, "index_entries": index_entries, "log_entry": log_entry}
+
+
+def _apply_compilation(result: dict) -> int:
+    """Write parsed compilation output to disk. Returns count of files written."""
+    count = 0
+    for article in result["articles"]:
+        path = ROOT_DIR / article["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(article["content"] + "\n", encoding="utf-8")
+        count += 1
+
+    if result["index_entries"]:
+        index_path = KNOWLEDGE_DIR / "index.md"
+        existing = index_path.read_text(encoding="utf-8") if index_path.exists() else (
+            "# Knowledge Base Index\n\n"
+            "| Article | Summary | Compiled From | Updated |\n"
+            "|---------|---------|---------------|---------|"
+        )
+        index_path.write_text(existing.rstrip() + "\n" + result["index_entries"] + "\n", encoding="utf-8")
+
+    if result["log_entry"]:
+        log_path = KNOWLEDGE_DIR / "log.md"
+        existing = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        log_path.write_text(existing.rstrip() + "\n\n" + result["log_entry"] + "\n", encoding="utf-8")
+
+    return count
+
+
 async def compile_daily_log(log_path: Path, state: dict) -> float:
     """Compile a single daily log into knowledge articles.
+
+    Single-pass approach: no tools, max_turns=1. The LLM outputs all articles
+    as structured XML blocks; Python writes them to disk. This avoids the
+    multi-turn overhead of the old tool-calling approach (~30 turns → 1 turn).
 
     Returns the API cost of the compilation.
     """
@@ -45,75 +104,93 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
         query,
     )
 
-    # Filter out trivial FLUSH_OK lines — they add noise without content
+    # Filter out trivial lines that add noise without content
     raw_log = log_path.read_text(encoding="utf-8")
     log_content = "\n".join(
         line for line in raw_log.splitlines()
-        if "FLUSH_OK" not in line
+        if "FLUSH_OK" not in line and "FLUSH_ERROR" not in line
     ).strip()
 
     schema = COMPILE_RULES_FILE.read_text(encoding="utf-8")
-    wiki_index = read_wiki_index()
+    # Variant 2: compact index (slug + summary only, no dates/sources columns)
+    wiki_index = read_wiki_index_compact()
+    # Smart pre-load: only articles whose slug appears in the daily log
+    relevant = load_relevant_articles(log_content)
     timestamp = now_iso()
+    today = timestamp[:10]
 
-    prompt = f"""You are a knowledge compiler. Your job is to read a daily conversation log
-and extract knowledge into structured wiki articles.
+    existing_articles_section = ""
+    if relevant:
+        parts = [f"### {path}\n\n{content}" for path, content in relevant.items()]
+        existing_articles_section = (
+            "\n## Existing Articles (pre-loaded for updating)\n\n"
+            + "\n\n---\n\n".join(parts)
+            + "\n"
+        )
 
-## Schema (AGENTS.md)
+    prompt = f"""You are a knowledge compiler. Read the daily log and output wiki articles in the structured format below.
+
+## Schema
 
 {schema}
 
-## Current Wiki Index
+## Existing Articles in Wiki
 
 {wiki_index}
-
-(To read any existing article before updating it, use the Read tool on the path shown in the index.)
-
+{existing_articles_section}
 ## Daily Log to Compile
 
 **File:** {log_path.name}
 
 {log_content}
 
-## Your Task
+## Output Format
 
-Read the daily log above and compile it into wiki articles following the schema exactly.
+Output ONLY the following XML blocks — no prose, no explanations.
 
-### Rules:
+For each article to create or update:
+```
+<article path="knowledge/concepts/slug.md" action="create">
+---
+title: "..."
+aliases: [...]
+tags: [...]
+sources:
+  - "daily/{log_path.name}"
+created: {today}
+updated: {today}
+---
 
-1. **Extract key concepts** - Identify 3-7 distinct concepts worth their own article
-2. **Create concept articles** in `knowledge/concepts/` - One .md file per concept
-   - Use the exact article format from AGENTS.md (YAML frontmatter + sections)
-   - Include `sources:` in frontmatter pointing to the daily log file
-   - Use `[[concepts/slug]]` wikilinks to link to related concepts
-   - Write in encyclopedia style - neutral, comprehensive
-3. **Create connection articles** in `knowledge/connections/` if this log reveals non-obvious
-   relationships between 2+ existing concepts
-4. **Update existing articles** if this log adds new information to concepts already in the wiki
-   - Read the existing article, add the new information, add the source to frontmatter
-5. **Update knowledge/index.md** - Add new entries to the table
-   - Each entry: `| [[path/slug]] | One-line summary | source-file | {timestamp[:10]} |`
-6. **Append to knowledge/log.md** - Add a timestamped entry:
-   ```
-   ## [{timestamp}] compile | {log_path.name}
-   - Source: daily/{log_path.name}
-   - Articles created: [[concepts/x]], [[concepts/y]]
-   - Articles updated: [[concepts/z]] (if any)
-   ```
+# Title
 
-### File paths:
-- Write concept articles to: {CONCEPTS_DIR}
-- Write connection articles to: {CONNECTIONS_DIR}
-- Update index at: {KNOWLEDGE_DIR / 'index.md'}
-- Append log at: {KNOWLEDGE_DIR / 'log.md'}
+...full article content...
+</article>
+```
 
-### Quality standards:
-- Every article must have complete YAML frontmatter
-- Every article must link to at least 2 other articles via [[wikilinks]]
-- Key Points section should have 3-5 bullet points
-- Details section should have 2+ paragraphs
-- Related Concepts section should have 2+ entries
-- Sources section should cite the daily log with specific claims extracted
+For updating an existing article, use `action="update"` and provide the COMPLETE updated file content (not just the diff). Only update if the log genuinely adds new information to that article.
+
+For new index rows (one per new article):
+```
+<index_entries>
+| [[concepts/slug]] | One-line summary | daily/{log_path.name} | {today} |
+</index_entries>
+```
+
+For the build log:
+```
+<log_entry>
+## [{timestamp}] compile | {log_path.name}
+- Source: daily/{log_path.name}
+- Articles created: [[concepts/x]]
+- Articles updated: [[concepts/y]]
+</log_entry>
+```
+
+## Quality Rules
+- Extract 3-7 distinct concepts
+- Every article: complete YAML frontmatter, ≥2 wikilinks, ≥2 Related Concepts entries
+- Key Points: 3-5 bullets; Details: 2+ paragraphs
+- Prefer updating existing articles over creating near-duplicates
 """
 
     cost = 0.0
@@ -121,26 +198,29 @@ Read the daily log above and compile it into wiki articles following the schema 
 
     for attempt in range(1, 4):
         cost = 0.0
+        response = ""
         try:
             async for message in query(
                 prompt=prompt,
                 options=ClaudeAgentOptions(
                     cwd=str(ROOT_DIR),
-                    system_prompt={"type": "preset", "preset": "claude_code"},
-                    allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"],
-                    permission_mode="acceptEdits",
-                    max_turns=30,
+                    allowed_tools=[],
+                    max_turns=1,
                 ),
             ):
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
-                            pass  # compilation output - LLM writes files directly
+                            response += block.text
                 elif isinstance(message, ResultMessage):
                     cost = message.total_cost_usd or 0.0
                     print(f"  Cost: ${cost:.4f}")
+
+            result = _parse_compilation_output(response)
+            written = _apply_compilation(result)
+            print(f"  Written: {written} file(s), {len(result['articles'])} article(s)")
             last_error = None
-            break  # success
+            break
         except Exception as e:
             last_error = e
             if attempt < 3:
@@ -150,8 +230,6 @@ Read the daily log above and compile it into wiki articles following the schema 
             else:
                 print(f"  Error after 3 attempts: {e}")
 
-    # Update state regardless of outcome so the file isn't retried on next cron
-    # unless it actually changes on disk.
     rel_path = log_path.name
     state.setdefault("ingested", {})[rel_path] = {
         "hash": file_hash(log_path),

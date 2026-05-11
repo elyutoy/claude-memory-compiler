@@ -7,6 +7,7 @@ contradictions (LLM), missing backlinks, and sparse articles.
 Usage:
     uv run python lint.py                    # all checks
     uv run python lint.py --structural-only  # skip LLM checks (faster, cheaper)
+    uv run python lint.py --auto-fix         # fix auto-fixable issues (missing backlinks)
 """
 
 from __future__ import annotations
@@ -247,12 +248,62 @@ def generate_report(all_issues: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def fix_missing_backlinks(issues: list[dict]) -> int:
+    """Add missing backlinks to Related Concepts sections. Returns count of fixes applied."""
+    fixable = [i for i in issues if i.get("auto_fixable") and i.get("check") == "missing_backlink"]
+    fixed = 0
+    for issue in fixable:
+        # detail format: "[[source]] links to [[target]] but not vice versa"
+        detail = issue["detail"]
+        import re as _re
+        m = _re.match(r"\[\[(.+?)\]\] links to \[\[(.+?)\]\]", detail)
+        if not m:
+            continue
+        source_link, target_link = m.group(1), m.group(2)
+        target_path = KNOWLEDGE_DIR / f"{target_link}.md"
+        if not target_path.exists():
+            continue
+        content = target_path.read_text(encoding="utf-8")
+        if f"[[{source_link}]]" in content:
+            continue  # already fixed (another issue in this batch covered it)
+        backlink = f"- [[{source_link}]]"
+        if "## Related Concepts" in content:
+            # Insert before the first line of the next section (or at end of Related Concepts)
+            lines = content.splitlines()
+            insert_at = None
+            in_related = False
+            for i, line in enumerate(lines):
+                if line.strip() == "## Related Concepts":
+                    in_related = True
+                    continue
+                if in_related and line.startswith("## "):
+                    insert_at = i
+                    break
+            if insert_at is not None:
+                lines.insert(insert_at, backlink)
+            else:
+                lines.append(backlink)
+            target_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        elif "## Sources" in content:
+            content = content.replace("## Sources", f"## Related Concepts\n{backlink}\n\n## Sources")
+            target_path.write_text(content, encoding="utf-8")
+        else:
+            target_path.write_text(content.rstrip() + f"\n\n## Related Concepts\n{backlink}\n", encoding="utf-8")
+        fixed += 1
+    return fixed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Lint the knowledge base")
     parser.add_argument(
         "--structural-only",
         action="store_true",
         help="Skip LLM-based checks (contradictions) - faster and free",
+    )
+    parser.add_argument(
+        "--auto-fix",
+        action="store_true",
+        help="Automatically fix auto-fixable issues (missing backlinks)",
     )
     args = parser.parse_args()
 
@@ -283,6 +334,15 @@ def main():
         print(f"    Found {len(issues)} issue(s)")
     else:
         print("  Skipping: Contradictions (--structural-only)")
+
+    # Auto-fix before generating report
+    if args.auto_fix:
+        fixed = fix_missing_backlinks(all_issues)
+        if fixed:
+            print(f"\n  Auto-fixed {fixed} missing backlink(s) — re-running checks...")
+            all_issues = []
+            for name, check_fn in checks:
+                all_issues.extend(check_fn())
 
     # Generate and save report
     report = generate_report(all_issues)
