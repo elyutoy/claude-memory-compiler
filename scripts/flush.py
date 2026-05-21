@@ -2,7 +2,7 @@
 Memory flush agent - extracts important knowledge from conversation context.
 
 Spawned by session-end.py or pre-compact.py as a background process. Reads
-pre-extracted conversation context from a .md file, uses the Claude Agent SDK
+pre-extracted conversation context from a .md file, uses the DeepSeek API
 to decide what's worth saving, and appends the result to today's daily log.
 
 Usage:
@@ -11,23 +11,25 @@ Usage:
 
 from __future__ import annotations
 
-# Recursion prevention: set this BEFORE any imports that might trigger Claude
-import os
-os.environ["CLAUDE_INVOKED_BY"] = "memory_flush"
-
-import asyncio
 import json
 import logging
+import os
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 DAILY_DIR = ROOT / "daily"
 SCRIPTS_DIR = ROOT / "scripts"
 STATE_FILE = SCRIPTS_DIR / "last-flush.json"
 LOG_FILE = SCRIPTS_DIR / "flush.log"
+
+load_dotenv(SCRIPTS_DIR / ".env")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 # Set up file-based logging so we can verify the background process ran.
 # The parent process sends stdout/stderr to DEVNULL (to avoid the inherited
@@ -72,16 +74,28 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
         f.write(entry)
 
 
-async def run_flush(context: str) -> str:
-    """Use Claude Agent SDK to extract important knowledge from conversation context."""
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
+def call_deepseek(prompt: str, max_tokens: int = 4096) -> str:
+    """Один запрос к DeepSeek API."""
+    payload = json.dumps({
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.deepseek.com/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        },
     )
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.load(r)["choices"][0]["message"]["content"]
 
+
+def run_flush(context: str) -> str:
+    """Извлекает важное из контекста разговора через DeepSeek API."""
     prompt = f"""Review the conversation context below and respond with a concise summary
 of important items that should be preserved in the daily log.
 Do NOT use any tools — just return plain text.
@@ -114,37 +128,17 @@ respond with exactly: FLUSH_OK
 
 {context}"""
 
-    response = ""
-
     for attempt in range(1, 4):
-        response = ""
         try:
-            async for message in query(
-                prompt=prompt,
-                options=ClaudeAgentOptions(
-                    cwd=str(ROOT),
-                    allowed_tools=[],
-                    max_turns=2,
-                ),
-            ):
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            response += block.text
-                elif isinstance(message, ResultMessage):
-                    pass
-            break  # success
+            return call_deepseek(prompt)
         except Exception as e:
             import traceback
             if attempt < 3:
-                import time as _time
-                logging.warning("Agent SDK error (attempt %d/3): %s — retrying in 10s", attempt, e)
-                _time.sleep(10)
+                logging.warning("DeepSeek error (attempt %d/3): %s — retrying in 10s", attempt, e)
+                time.sleep(10)
             else:
-                logging.error("Agent SDK error: %s\n%s", e, traceback.format_exc())
-                response = f"FLUSH_ERROR: {type(e).__name__}: {e}"
-
-    return response
+                logging.error("DeepSeek error: %s\n%s", e, traceback.format_exc())
+                return f"FLUSH_ERROR: {type(e).__name__}: {e}"
 
 
 def main():
@@ -189,7 +183,7 @@ def main():
         return
 
     # Run the LLM extraction
-    response = asyncio.run(run_flush(context))
+    response = run_flush(context)
 
     # Append to daily log
     if "FLUSH_OK" in response:

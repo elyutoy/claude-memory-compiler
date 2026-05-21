@@ -14,9 +14,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
+import time
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 from config import COMPILE_RULES_FILE, CONCEPTS_DIR, CONNECTIONS_DIR, DAILY_DIR, KNOWLEDGE_DIR, now_iso
 from utils import (
@@ -87,22 +91,86 @@ def _apply_compilation(result: dict) -> int:
     return count
 
 
-async def compile_daily_log(log_path: Path, state: dict) -> float:
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+# Sonnet 4.6, $ за 1M токенов
+_PRICE = {"in": 3.0, "out": 15.0, "cache_write": 3.75, "cache_read": 0.3}
+
+
+def _usage_cost(usage) -> float:
+    """Стоимость запроса по токенам (Sonnet 4.6)."""
+    g = lambda n: getattr(usage, n, 0) or 0
+    return (
+        g("input_tokens") * _PRICE["in"]
+        + g("output_tokens") * _PRICE["out"]
+        + g("cache_creation_input_tokens") * _PRICE["cache_write"]
+        + g("cache_read_input_tokens") * _PRICE["cache_read"]
+    ) / 1_000_000
+
+
+def _build_system(schema: str) -> str:
+    """Стабильная часть промпта (кэшируется): схема, формат вывода, правила."""
+    return f"""You are a knowledge compiler. Read the daily log and output wiki articles in the structured format below.
+
+## Schema
+
+{schema}
+
+## Output Format
+
+Output ONLY the following XML blocks — no prose, no explanations.
+Substitute <LOG_FILE>, <TODAY> and <TIMESTAMP> with the values given in the user message.
+
+For each article to create or update:
+<article path="knowledge/concepts/slug.md" action="create">
+---
+title: "..."
+aliases: [...]
+tags: [...]
+sources:
+  - "daily/<LOG_FILE>"
+created: <TODAY>
+updated: <TODAY>
+---
+
+# Title
+
+...full article content...
+</article>
+
+For updating an existing article, use action="update" and provide the COMPLETE updated file content (not just the diff). Only update if the log genuinely adds new information to that article.
+
+For new index rows (one per new article):
+<index_entries>
+| [[concepts/slug]] | One-line summary | daily/<LOG_FILE> | <TODAY> |
+</index_entries>
+
+For the build log:
+<log_entry>
+## [<TIMESTAMP>] compile | <LOG_FILE>
+- Source: daily/<LOG_FILE>
+- Articles created: [[concepts/x]]
+- Articles updated: [[concepts/y]]
+</log_entry>
+
+## Quality Rules
+- Extract 3-7 distinct concepts
+- Every article: complete YAML frontmatter, ≥2 wikilinks, ≥2 Related Concepts entries
+- Key Points: 3-5 bullets; Details: 2+ paragraphs
+- Prefer updating existing articles over creating near-duplicates
+"""
+
+
+def compile_daily_log(log_path: Path, state: dict) -> float:
     """Compile a single daily log into knowledge articles.
 
-    Single-pass approach: no tools, max_turns=1. The LLM outputs all articles
-    as structured XML blocks; Python writes them to disk. This avoids the
-    multi-turn overhead of the old tool-calling approach (~30 turns → 1 turn).
+    Один запрос к Anthropic API: LLM выдаёт все статьи структурированными
+    XML-блоками, Python пишет их на диск. Стабильная часть промпта (схема)
+    кэшируется через prompt caching.
 
     Returns the API cost of the compilation.
     """
-    from claude_agent_sdk import (
-        AssistantMessage,
-        ClaudeAgentOptions,
-        ResultMessage,
-        TextBlock,
-        query,
-    )
+    import anthropic
 
     # Filter out trivial lines that add noise without content
     raw_log = log_path.read_text(encoding="utf-8")
@@ -128,93 +196,44 @@ async def compile_daily_log(log_path: Path, state: dict) -> float:
             + "\n"
         )
 
-    prompt = f"""You are a knowledge compiler. Read the daily log and output wiki articles in the structured format below.
-
-## Schema
-
-{schema}
-
-## Existing Articles in Wiki
+    user_content = f"""## Existing Articles in Wiki
 
 {wiki_index}
 {existing_articles_section}
 ## Daily Log to Compile
 
-**File:** {log_path.name}
+**LOG_FILE:** {log_path.name}
+**TODAY:** {today}
+**TIMESTAMP:** {timestamp}
 
 {log_content}
-
-## Output Format
-
-Output ONLY the following XML blocks — no prose, no explanations.
-
-For each article to create or update:
-```
-<article path="knowledge/concepts/slug.md" action="create">
----
-title: "..."
-aliases: [...]
-tags: [...]
-sources:
-  - "daily/{log_path.name}"
-created: {today}
-updated: {today}
----
-
-# Title
-
-...full article content...
-</article>
-```
-
-For updating an existing article, use `action="update"` and provide the COMPLETE updated file content (not just the diff). Only update if the log genuinely adds new information to that article.
-
-For new index rows (one per new article):
-```
-<index_entries>
-| [[concepts/slug]] | One-line summary | daily/{log_path.name} | {today} |
-</index_entries>
-```
-
-For the build log:
-```
-<log_entry>
-## [{timestamp}] compile | {log_path.name}
-- Source: daily/{log_path.name}
-- Articles created: [[concepts/x]]
-- Articles updated: [[concepts/y]]
-</log_entry>
-```
-
-## Quality Rules
-- Extract 3-7 distinct concepts
-- Every article: complete YAML frontmatter, ≥2 wikilinks, ≥2 Related Concepts entries
-- Key Points: 3-5 bullets; Details: 2+ paragraphs
-- Prefer updating existing articles over creating near-duplicates
 """
+
+    client = anthropic.Anthropic()
+    system_blocks = [{
+        "type": "text",
+        "text": _build_system(schema),
+        "cache_control": {"type": "ephemeral"},
+    }]
 
     cost = 0.0
     last_error = None
 
     for attempt in range(1, 4):
         cost = 0.0
-        response = ""
         try:
-            async for message in query(
-                prompt=prompt,
-                options=ClaudeAgentOptions(
-                    cwd=str(ROOT_DIR),
-                    allowed_tools=[],
-                    max_turns=1,
-                ),
-            ):
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            response += block.text
-                elif isinstance(message, ResultMessage):
-                    cost = message.total_cost_usd or 0.0
-                    print(f"  Cost: ${cost:.4f}")
+            with client.messages.stream(
+                model=ANTHROPIC_MODEL,
+                max_tokens=32000,
+                thinking={"type": "adaptive"},
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_content}],
+            ) as stream:
+                final = stream.get_final_message()
+
+            response = "".join(b.text for b in final.content if b.type == "text")
+            cost = _usage_cost(final.usage)
+            print(f"  Cost: ${cost:.4f}")
 
             result = _parse_compilation_output(response)
             written = _apply_compilation(result)
@@ -224,15 +243,16 @@ For the build log:
         except Exception as e:
             last_error = e
             if attempt < 3:
-                import time as _time
                 print(f"  Attempt {attempt} failed: {e} — retrying in 10s...")
-                _time.sleep(10)
+                time.sleep(10)
             else:
                 print(f"  Error after 3 attempts: {e}")
 
     rel_path = log_path.name
+    # On failure, store hash=None so the log is retried on the next run
+    # (a non-None hash matching the file would mark it permanently "done").
     state.setdefault("ingested", {})[rel_path] = {
-        "hash": file_hash(log_path),
+        "hash": file_hash(log_path) if not last_error else None,
         "compiled_at": now_iso(),
         "cost_usd": cost,
         **({"error": str(last_error)} if last_error else {}),
@@ -291,7 +311,7 @@ def main():
     total_cost = 0.0
     for i, log_path in enumerate(to_compile, 1):
         print(f"\n[{i}/{len(to_compile)}] Compiling {log_path.name}...")
-        cost = asyncio.run(compile_daily_log(log_path, state))
+        cost = compile_daily_log(log_path, state)
         total_cost += cost
         print(f"  Done.")
 
