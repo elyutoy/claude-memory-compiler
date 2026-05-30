@@ -11,11 +11,18 @@ REPOS=(
   "$BASE/claude-memory-compiler"
   "$BASE/Hybrid System"
   "$BASE/Memory wiki"
+  "$BASE/system-config"
 )
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
 
 log "=== старт авто-бэкапа ==="
+
+# Обновить snapshot конфига (~/.claude + launchd) перед бэкапом system-config.
+# sync.sh копирует только белый список — секреты сюда не попадают.
+if [ -x "$BASE/system-config/sync.sh" ]; then
+  "$BASE/system-config/sync.sh" >> "$LOG" 2>&1 && log "[system-config] sync выполнен" || log "[system-config] ОШИБКА sync"
+fi
 
 for repo in "${REPOS[@]}"; do
   name="${repo:t}"
