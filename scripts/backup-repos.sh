@@ -6,6 +6,7 @@
 
 BASE="/Volumes/Work/Users/geg/Мои проекты/Ai Projects"
 LOG="$BASE/backup-repos.log"
+MAX_BYTES=104857600   # 100 МБ — лимит GitHub; файлы крупнее отвергаются (pre-receive hook)
 
 REPOS=(
   "$BASE/claude-memory-compiler"
@@ -33,6 +34,17 @@ for repo in "${REPOS[@]}"; do
   fi
 
   git -C "$repo" add -A 2>>"$LOG"
+
+  # Страховка: исключить из коммита файлы >100 МБ. GitHub отвергает такие пуши
+  # (pre-receive hook), из-за чего бэкап молча падал бы на дни. Разстейджим большой
+  # файл (он остаётся на диске) и громко логируем — нужно добавить его в .gitignore.
+  git -C "$repo" diff --cached --name-only -z | while IFS= read -r -d '' f; do
+    size=$(git -C "$repo" cat-file -s ":$f" 2>/dev/null) || continue
+    if [ -n "$size" ] && [ "$size" -gt "$MAX_BYTES" ]; then
+      git -C "$repo" restore --staged -- "$f" 2>>"$LOG"
+      log "[$name] ⚠️ ПРОПУЩЕН файл >100 МБ ($(( size / 1048576 )) МБ): $f — добавьте в .gitignore"
+    fi
+  done
 
   if git -C "$repo" diff --cached --quiet; then
     log "[$name] локальных изменений нет"
