@@ -8,6 +8,11 @@ BASE="/Volumes/Work/Users/geg/Мои проекты/Ai Projects"
 HERMES_AGENT="/Volumes/Work/Users/geg/Мои проекты/Hermes Agent"
 LOG="$BASE/backup-repos.log"
 MAX_BYTES=104857600   # 100 МБ — лимит GitHub; файлы крупнее отвергаются (pre-receive hook)
+STATUS_DIR="$HERMES_AGENT/.backup-status"
+STATUS_FILE="$STATUS_DIR/github-backup-status.json"
+REMOTE_STATUS="/root/.hermes/github-backup-status.json"
+CREDENTIALS_FILE="$HERMES_AGENT/sources/promts/install/credentials.txt"
+SSH_KEY="/Volumes/Work/Users/geg/.ssh/hermes_dashboard_ed25519"
 
 REPOS=(
   "$BASE/claude-memory-compiler"
@@ -18,6 +23,89 @@ REPOS=(
 )
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
+
+read_credential() {
+  awk -F= -v key="$1" '
+    $1 == key {
+      sub(/^[^=]*=/, "")
+      sub(/^"/, "")
+      sub(/"$/, "")
+      print
+      exit
+    }
+  ' "$CREDENTIALS_FILE"
+}
+
+write_backup_status() {
+  local repo="$1"
+  local name="$2"
+  local status="$3"
+  local detail="$4"
+  local remote branch commit
+
+  mkdir -p "$STATUS_DIR" 2>>"$LOG" || return 0
+  remote="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  branch="$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  commit="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || true)"
+
+  BACKUP_REPO_NAME="$name" \
+  BACKUP_REPO_PATH="$repo" \
+  BACKUP_STATUS="$status" \
+  BACKUP_DETAIL="$detail" \
+  BACKUP_REMOTE="$remote" \
+  BACKUP_BRANCH="$branch" \
+  BACKUP_COMMIT="$commit" \
+  BACKUP_STATUS_FILE="$STATUS_FILE" \
+  python3 - <<'PY_STATUS' 2>>"$LOG" || log "[$name] WARNING: backup status write failed"
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(os.environ["BACKUP_STATUS_FILE"])
+try:
+    data = json.loads(path.read_text()) if path.exists() else {}
+except Exception:
+    data = {}
+repos = data.setdefault("repositories", {})
+name = os.environ["BACKUP_REPO_NAME"]
+now = datetime.now(timezone.utc).isoformat()
+repos[name] = {
+    "status": os.environ["BACKUP_STATUS"],
+    "detail": os.environ["BACKUP_DETAIL"],
+    "path": os.environ["BACKUP_REPO_PATH"],
+    "remote": os.environ["BACKUP_REMOTE"],
+    "branch": os.environ["BACKUP_BRANCH"],
+    "commit": os.environ["BACKUP_COMMIT"],
+    "updated_at": now,
+}
+data["updated_at"] = now
+path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+PY_STATUS
+}
+
+sync_backup_status_to_vps() {
+  [ -f "$STATUS_FILE" ] || return 0
+  [ -r "$SSH_KEY" ] || return 0
+  [ -f "$CREDENTIALS_FILE" ] || return 0
+
+  local vps_ip vps_user
+  vps_ip="$(read_credential VPS_IP)"
+  vps_user="$(read_credential VPS_USER)"
+  [ -n "$vps_ip" ] && [ -n "$vps_user" ] || return 0
+
+  if scp -q \
+    -i "$SSH_KEY" \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/tmp/hermes_agent_known_hosts_ubuntu24 \
+    "$STATUS_FILE" "${vps_user}@${vps_ip}:${REMOTE_STATUS}" 2>>"$LOG"; then
+    log "[backup-status] synced to VPS"
+  else
+    log "[backup-status] WARNING: sync to VPS failed"
+  fi
+}
+
 
 log "=== старт авто-бэкапа ==="
 
@@ -32,6 +120,7 @@ for repo in "${REPOS[@]}"; do
 
   if [ ! -d "$repo/.git" ]; then
     log "[$name] ПРОПУСК — не git-репозиторий"
+    write_backup_status "$repo" "$name" "skipped" "not a git repository"
     continue
   fi
 
@@ -57,6 +146,7 @@ for repo in "${REPOS[@]}"; do
       log "[$name] коммит: $msg"
     else
       log "[$name] ОШИБКА коммита"
+      write_backup_status "$repo" "$name" "error" "commit failed"
       continue
     fi
   fi
@@ -65,12 +155,17 @@ for repo in "${REPOS[@]}"; do
   if git -C "$repo" remote | grep -q .; then
     if git -C "$repo" push -q 2>>"$LOG"; then
       log "[$name] push выполнен"
+      write_backup_status "$repo" "$name" "ok" "push выполнен"
     else
       log "[$name] ОШИБКА push (нет сети/удалённого репозитория?)"
+      write_backup_status "$repo" "$name" "error" "push failed"
     fi
   else
     log "[$name] remote не настроен — push пропущен"
+    write_backup_status "$repo" "$name" "skipped" "remote not configured"
   fi
 done
+
+sync_backup_status_to_vps
 
 log "=== конец авто-бэкапа ==="
