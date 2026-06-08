@@ -115,6 +115,10 @@ if [ -x "$BASE/system-config/sync.sh" ]; then
   "$BASE/system-config/sync.sh" >> "$LOG" 2>&1 && log "[system-config] sync выполнен" || log "[system-config] ОШИБКА sync"
 fi
 
+if [ -x "$HERMES_AGENT/bin/snapshot-hermes-vps-settings" ]; then
+  "$HERMES_AGENT/bin/snapshot-hermes-vps-settings" >> "$LOG" 2>&1 && log "[Hermes Agent] VPS settings snapshot выполнен" || log "[Hermes Agent] ОШИБКА VPS settings snapshot"
+fi
+
 for repo in "${REPOS[@]}"; do
   name="${repo:t}"
 
