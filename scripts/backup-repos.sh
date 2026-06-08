@@ -5,6 +5,7 @@
 # Запускается по cron каждые 2 часа днём; вручную — через скилл /backup-repos.
 
 BASE="/Volumes/Work/Users/geg/Мои проекты/Ai Projects"
+HERMES_AGENT="/Volumes/Work/Users/geg/Мои проекты/Hermes Agent"
 LOG="$BASE/backup-repos.log"
 MAX_BYTES=104857600   # 100 МБ — лимит GitHub; файлы крупнее отвергаются (pre-receive hook)
 
@@ -13,6 +14,7 @@ REPOS=(
   "$BASE/Hybrid System"
   "$BASE/Memory wiki"
   "$BASE/system-config"
+  "$HERMES_AGENT"
 )
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
