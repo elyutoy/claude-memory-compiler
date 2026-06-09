@@ -39,7 +39,7 @@ read_credential() {
 write_backup_status() {
   local repo="$1"
   local name="$2"
-  local status="$3"
+  local repo_status="$3"
   local detail="$4"
   local remote branch commit
 
@@ -50,7 +50,7 @@ write_backup_status() {
 
   BACKUP_REPO_NAME="$name" \
   BACKUP_REPO_PATH="$repo" \
-  BACKUP_STATUS="$status" \
+  BACKUP_STATUS="$repo_status" \
   BACKUP_DETAIL="$detail" \
   BACKUP_REMOTE="$remote" \
   BACKUP_BRANCH="$branch" \
