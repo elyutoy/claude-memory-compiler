@@ -24,6 +24,12 @@ REPOS=(
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
 
+# Ротация лога: держим последние MAX_LOG_LINES строк, чтобы файл не рос бесконечно.
+MAX_LOG_LINES=1000
+if [ -f "$LOG" ] && [ "$(wc -l < "$LOG")" -gt "$MAX_LOG_LINES" ]; then
+  tail -n "$MAX_LOG_LINES" "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+
 read_credential() {
   awk -F= -v key="$1" '
     $1 == key {
