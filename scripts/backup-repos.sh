@@ -122,7 +122,14 @@ if [ -x "$BASE/system-config/sync.sh" ]; then
 fi
 
 if [ -x "$HERMES_AGENT/bin/snapshot-hermes-vps-settings" ]; then
-  "$HERMES_AGENT/bin/snapshot-hermes-vps-settings" >> "$LOG" 2>&1 && log "[Hermes Agent] VPS settings snapshot выполнен" || log "[Hermes Agent] ОШИБКА VPS settings snapshot"
+  # Вывод снимка в лог не пишем (раздувает файл построчным written=...).
+  # При успехе — только итоговая строка; при ошибке — последние 20 строк для диагностики.
+  if snap_out=$("$HERMES_AGENT/bin/snapshot-hermes-vps-settings" 2>&1); then
+    log "[Hermes Agent] VPS settings snapshot выполнен"
+  else
+    log "[Hermes Agent] ОШИБКА VPS settings snapshot"
+    print -r -- "$snap_out" | tail -n 20 >> "$LOG"
+  fi
 fi
 
 for repo in "${REPOS[@]}"; do
