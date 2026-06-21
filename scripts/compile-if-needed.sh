@@ -3,7 +3,7 @@
 # Scheduled every 2 hours; exits silently if today is already done.
 
 PROJ="/Volumes/Work/Users/geg/Мои проекты/Ai Projects/claude-memory-compiler"
-UV="/Volumes/Work/Users/geg/.local/bin/uv"
+UV="/Users/elyutoy/.local/bin/uv"
 STATE="$PROJ/scripts/state.json"
 TODAY=$(date +%Y-%m-%d)
 
