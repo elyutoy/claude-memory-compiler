@@ -141,6 +141,27 @@ for repo in "${REPOS[@]}"; do
     continue
   fi
 
+  # Гейт активного редактирования: если репозиторий сейчас правят (есть изменения
+  # и самый свежий изменённый файл моложе GUARD_MIN минут) — пропускаем этот проход,
+  # чтобы авто-бэкап не перехватывал работу в процессе своим генерик-сообщением
+  # «Авто-бэкап» (и не пушил полуготовое). Простаивающие незакоммиченные правки
+  # back-up-нутся в следующий проход, когда редактирование утихнет.
+  GUARD_MIN=30
+  changed_files=("${(@f)$(git -C "$repo" ls-files -m -o --exclude-standard 2>/dev/null)}")
+  if [ -n "${changed_files[1]:-}" ]; then
+    now=$(date +%s); active=0
+    for f in "${changed_files[@]}"; do
+      [ -f "$repo/$f" ] || continue
+      mt=$(stat -f %m "$repo/$f" 2>/dev/null) || continue
+      if [ $(( now - mt )) -lt $(( GUARD_MIN * 60 )) ]; then active=1; break; fi
+    done
+    if [ "$active" = 1 ]; then
+      log "[$name] ПРОПУСК — активное редактирование (<${GUARD_MIN} мин); back-up в следующий проход"
+      write_backup_status "$repo" "$name" "skipped" "active editing"
+      continue
+    fi
+  fi
+
   git -C "$repo" add -A 2>>"$LOG"
 
   # Страховка: исключить из коммита файлы >100 МБ. GitHub отвергает такие пуши
