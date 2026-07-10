@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -91,14 +92,19 @@ def _apply_compilation(result: dict) -> int:
     return count
 
 
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
+# DeepSeek через Anthropic-совместимый endpoint — отдельный кошелёк, не Anthropic-баланс.
+# adaptive-thinking DeepSeek не тянет (съедает весь бюджет на размышление → пустой ответ),
+# поэтому thinking с явным budget_tokens; cache_control DeepSeek игнорирует (не передаём).
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
+COMPILE_MODEL = "deepseek-v4-flash"
+THINKING_BUDGET = 8000
 
-# Sonnet 4.6, $ за 1M токенов
-_PRICE = {"in": 3.0, "out": 15.0, "cache_write": 3.75, "cache_read": 0.3}
+# DeepSeek V4 Flash, $ за 1M токенов (грубая оценка; кэш не поддерживается)
+_PRICE = {"in": 0.1, "out": 0.3, "cache_write": 0.0, "cache_read": 0.0}
 
 
 def _usage_cost(usage) -> float:
-    """Стоимость запроса по токенам (Sonnet 4.6)."""
+    """Стоимость запроса по токенам (DeepSeek V4 Flash, приблизительно)."""
     g = lambda n: getattr(usage, n, 0) or 0
     return (
         g("input_tokens") * _PRICE["in"]
@@ -209,12 +215,11 @@ def compile_daily_log(log_path: Path, state: dict) -> float:
 {log_content}
 """
 
-    client = anthropic.Anthropic()
-    system_blocks = [{
-        "type": "text",
-        "text": _build_system(schema),
-        "cache_control": {"type": "ephemeral"},
-    }]
+    client = anthropic.Anthropic(
+        api_key=os.environ.get("DEEPSEEK_API_KEY"),
+        base_url=DEEPSEEK_BASE_URL,
+    )
+    system_prompt = _build_system(schema)
 
     cost = 0.0
     last_error = None
@@ -223,15 +228,19 @@ def compile_daily_log(log_path: Path, state: dict) -> float:
         cost = 0.0
         try:
             with client.messages.stream(
-                model=ANTHROPIC_MODEL,
+                model=COMPILE_MODEL,
                 max_tokens=32000,
-                thinking={"type": "adaptive"},
-                system=system_blocks,
+                thinking={"type": "enabled", "budget_tokens": THINKING_BUDGET},
+                system=system_prompt,
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
                 final = stream.get_final_message()
 
             response = "".join(b.text for b in final.content if b.type == "text")
+            # DeepSeek может молча вернуть пустой ответ — считаем это неудачей и повторяем,
+            # чтобы не записать в state «успешно скомпилировано» при нулевом результате.
+            if len(response.strip()) < 30:
+                raise ValueError("empty/too-short response from model")
             cost = _usage_cost(final.usage)
             print(f"  Cost: ${cost:.4f}")
 
