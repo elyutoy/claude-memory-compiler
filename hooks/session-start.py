@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 KNOWLEDGE_DIR = ROOT / "knowledge"
 DAILY_DIR = ROOT / "daily"
 INDEX_FILE = KNOWLEDGE_DIR / "index.md"
+MAP_FILE = KNOWLEDGE_DIR / "map.md"
 
 MAX_CONTEXT_CHARS = 8_000
 MAX_LOG_LINES = 15
@@ -53,15 +54,23 @@ def get_recent_log() -> str:
 
 
 def build_knowledge_map() -> str:
-    """Compact map of all knowledge articles — slugs grouped by topic, no summaries.
+    """Topic counts injected at startup; the full slug list is written to map.md.
 
-    The full index.md (~23 KB at 120 articles) overflows MAX_CONTEXT_CHARS and is
-    truncated mid-list, silently dropping the tail. A slug-only map keeps the WHOLE
-    set of articles visible; details are pulled on demand (this is the query-based
-    layer — lazy, not blind injection at startup where there is no query yet):
-      - summaries -> knowledge/index.md
-      - full text -> knowledge/concepts/<slug>.md
-      - content search -> uv run python scripts/query.py "<question>"
+    History: index.md (~23 KB) overflowed MAX_CONTEXT_CHARS and got truncated
+    mid-list, so it was replaced by a slug-only map. That map grew too: at 235
+    articles it is ~8.7 KB (~2.2k tokens) injected into EVERY session, second
+    only to the skills listing.
+
+    Both extremes are wrong. Dropping the slugs loses the ability to see that an
+    article exists at all; injecting them all pays 2.2k tokens per session for a
+    list that is usually not read. So the list is not deleted — it is moved one
+    hop away, which is the same lazy-loading principle already used for the
+    article bodies:
+      - topic counts        -> injected here (~0.2k tokens)
+      - full slug list      -> knowledge/map.md   (regenerated on every session)
+      - summaries           -> knowledge/index.md
+      - full text           -> knowledge/concepts/<slug>.md
+      - content search      -> uv run python scripts/query.py "<question>"
     """
     concepts_dir = KNOWLEDGE_DIR / "concepts"
     slugs = sorted(p.stem for p in concepts_dir.glob("*.md")) if concepts_dir.exists() else []
@@ -73,17 +82,36 @@ def build_knowledge_map() -> str:
         topic = slug.split("-", 1)[0]
         groups.setdefault(topic, []).append(slug)
 
-    lines = [
-        f"## Knowledge Base Map ({len(slugs)} articles)",
-        "",
-        "Slugs only — pull details on demand: summaries -> knowledge/index.md · "
+    # Full list -> file. Best effort: a read-only knowledge dir must not break the hook.
+    try:
+        MAP_FILE.write_text(
+            "\n".join(
+                [f"# Knowledge Base Map ({len(slugs)} articles)", ""]
+                + [
+                    f"**{topic}** ({len(groups[topic])}): " + " · ".join(groups[topic])
+                    for topic in sorted(groups)
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+    # Only topics with several articles carry signal; single-article topic names are
+    # noise at startup and live in map.md anyway.
+    multi = sorted(((t, len(s)) for t, s in groups.items() if len(s) > 1), key=lambda x: (-x[1], x[0]))
+    singles = sum(1 for s in groups.values() if len(s) == 1)
+    topics = ", ".join(f"{t} {n}" for t, n in multi)
+    if singles:
+        topics += f", +{singles} single-article topics"
+    return (
+        f"## Knowledge Base Map ({len(slugs)} articles)\n\n"
+        f"Topics: {topics}\n\n"
+        "Full slug list -> knowledge/map.md · summaries -> knowledge/index.md · "
         "full text -> knowledge/concepts/<slug>.md · "
-        'search -> `uv run python scripts/query.py "<question>"`',
-        "",
-    ]
-    for topic in sorted(groups):
-        lines.append(f"**{topic}** ({len(groups[topic])}): " + " · ".join(groups[topic]))
-    return "\n".join(lines)
+        'search -> `uv run python scripts/query.py "<question>"`'
+    )
 
 
 def build_context() -> str:
