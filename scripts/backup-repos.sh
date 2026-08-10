@@ -14,6 +14,13 @@ REMOTE_STATUS="/root/.hermes/github-backup-status.json"
 CREDENTIALS_FILE="$HERMES_AGENT/sources/promts/install/credentials.txt"
 SSH_KEY="/Volumes/Work/Users/geg/.ssh/hermes_dashboard_ed25519"
 
+# Токен GitHub — абсолютным путём, а не через ~. Из cron у задания нет пригодного HOME:
+# git не находит ~/.gitconfig, не подключает helper `store` и спрашивает логин у терминала,
+# которого нет — `could not read Username ... Device not configured`. Из-за этого push
+# молча не проходил месяцами: коммиты ложились локально, а на GitHub не уезжали.
+GIT_CREDENTIALS="/Users/elyutoy/.git-credentials"
+GIT_AUTH=(-c "credential.helper=store --file=$GIT_CREDENTIALS")
+
 REPOS=(
   "$BASE/claude-memory-compiler"
   "$BASE/Hybrid System"
@@ -195,11 +202,11 @@ for repo in "${REPOS[@]}"; do
 
   # push — всегда, чтобы подхватить и ручные неотправленные коммиты
   if git -C "$repo" remote | grep -q .; then
-    if git -C "$repo" push -q 2>>"$LOG"; then
+    if git -C "$repo" "${GIT_AUTH[@]}" push -q 2>>"$LOG"; then
       log "[$name] push выполнен"
       write_backup_status "$repo" "$name" "ok" "push выполнен"
     else
-      log "[$name] ОШИБКА push (нет сети/удалённого репозитория?)"
+      log "[$name] ОШИБКА push (нет сети/токен/удалённый репозиторий?)"
       write_backup_status "$repo" "$name" "error" "push failed"
     fi
   else
