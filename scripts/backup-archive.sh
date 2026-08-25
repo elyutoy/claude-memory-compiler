@@ -19,6 +19,9 @@ DEST_ROOT="$(dirname "$DEST")"
 # GNU rsync (brew) надёжнее системного openrsync на больших деревьях; fallback — системный.
 RSYNC="/opt/homebrew/bin/rsync"
 if [[ -x "$RSYNC" ]]; then PROG="--info=progress2"; else RSYNC="rsync"; PROG="--progress"; fi
+# Под launchd прогресс уходит в файл \r-строками и делает лог нечитаемым
+# (первый прогон backup-external, 25.08.2026). Показываем только человеку.
+[[ -t 1 ]] || PROG="--stats"
 
 if [[ ! -d "$DEST_ROOT" ]]; then
   echo "✗ Целевой диск не примонтирован: $DEST_ROOT"; exit 1

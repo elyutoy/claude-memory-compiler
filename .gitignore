@@ -34,3 +34,4 @@ scripts/uv.lock
 Thumbs.db
 
 .obsidian/
+scripts/backup-external.log

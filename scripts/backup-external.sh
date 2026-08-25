@@ -22,8 +22,12 @@ notify() {
   token=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$env_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
   chat=$(grep -m1 '^TELEGRAM_AUDIT_CHAT_ID=' "$env_file" | cut -d= -f2- | tr -d '"' | tr -d "'")
   [[ -n "$token" && -n "$chat" ]] || return 0
-  curl -s -m 15 -o /dev/null "https://api.telegram.org/bot$token/sendMessage" \
-       --data-urlencode "chat_id=$chat" --data-urlencode "text=$1"
+  local resp
+  resp=$(curl -s -m 15 "https://api.telegram.org/bot$token/sendMessage" \
+              --data-urlencode "chat_id=$chat" --data-urlencode "text=$1")
+  # Отчёт о бэкапе, не доехавший в Telegram, — тот же молчаливый пропуск.
+  if [[ "$resp" == *'"ok":true'* ]]; then log "Telegram sent: True"
+  else log "Telegram sent: False — ${resp:0:120}"; fi
 }
 
 if [[ ! -d "$DEST_ROOT" ]]; then
