@@ -35,3 +35,5 @@ Thumbs.db
 
 .obsidian/
 scripts/backup-external.log
+scripts/.backup-external-last
+scripts/.backup-external.lock/
