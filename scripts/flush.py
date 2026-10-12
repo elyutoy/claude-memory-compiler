@@ -77,10 +77,13 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
 def call_deepseek(prompt: str, max_tokens: int = 4096) -> str:
     """Один запрос к DeepSeek API."""
     payload = json.dumps({
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": max_tokens,
+        # У deepseek-flash (V4.1) рассуждение включено по умолчанию и ест тот же max_tokens:
+        # проверочный вызов 12.10.2026 вернул пустой content. Та же ловушка, что в Hybrid 16.08.
+        "thinking": {"type": "disabled"},
     }).encode()
     req = urllib.request.Request(
         "https://api.deepseek.com/chat/completions",

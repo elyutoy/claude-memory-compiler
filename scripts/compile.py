@@ -96,7 +96,7 @@ def _apply_compilation(result: dict) -> int:
 # adaptive-thinking DeepSeek не тянет (съедает весь бюджет на размышление → пустой ответ),
 # поэтому thinking с явным budget_tokens; cache_control DeepSeek игнорирует (не передаём).
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
-COMPILE_MODEL = "deepseek-v4-flash"
+COMPILE_MODEL = "deepseek-flash"
 THINKING_BUDGET = 8000
 
 # DeepSeek V4 Flash, $ за 1M токенов (грубая оценка; кэш не поддерживается)
