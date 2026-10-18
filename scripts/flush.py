@@ -29,7 +29,11 @@ STATE_FILE = SCRIPTS_DIR / "last-flush.json"
 LOG_FILE = SCRIPTS_DIR / "flush.log"
 
 load_dotenv(SCRIPTS_DIR / ".env")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # с 18.10.2026 вместо прямого DeepSeek
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Самый дешёвый провайдер OpenRouter с потолком цены ($ за 1 млн). Без этого 18.10.2026
+# запросы уходили к InferenceNet по $0,715 за выход вместо $0,144. Копия
+# Hybrid System/scripts/or_routing.py — отдельный репозиторий, менять вместе.
+OR_PROVIDER = {"sort": "price", "max_price": {"prompt": 0.15, "completion": 0.35}}  # с 18.10.2026 вместо прямого DeepSeek
 
 # Set up file-based logging so we can verify the background process ran.
 # The parent process sends stdout/stderr to DEVNULL (to avoid the inherited
@@ -84,6 +88,7 @@ def call_deepseek(prompt: str, max_tokens: int = 4096) -> str:
         # У deepseek-flash (V4.1) рассуждение включено по умолчанию и ест тот же max_tokens:
         # проверочный вызов 12.10.2026 вернул пустой content. Та же ловушка, что в Hybrid 16.08.
         "reasoning": {"enabled": False},  # у OpenRouter так, а не "thinking"
+        "provider": OR_PROVIDER,
     }).encode()
     req = urllib.request.Request(
         "https://openrouter.ai/api/v1/chat/completions",
