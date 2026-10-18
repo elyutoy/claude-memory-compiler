@@ -29,7 +29,7 @@ STATE_FILE = SCRIPTS_DIR / "last-flush.json"
 LOG_FILE = SCRIPTS_DIR / "flush.log"
 
 load_dotenv(SCRIPTS_DIR / ".env")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # с 18.10.2026 вместо прямого DeepSeek
 
 # Set up file-based logging so we can verify the background process ran.
 # The parent process sends stdout/stderr to DEVNULL (to avoid the inherited
@@ -75,22 +75,22 @@ def append_to_daily_log(content: str, section: str = "Session") -> None:
 
 
 def call_deepseek(prompt: str, max_tokens: int = 4096) -> str:
-    """Один запрос к DeepSeek API."""
+    """Один запрос к DeepSeek Flash через OpenRouter."""
     payload = json.dumps({
-        "model": "deepseek-flash",
+        "model": "deepseek/deepseek-v4.1-flash",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": max_tokens,
         # У deepseek-flash (V4.1) рассуждение включено по умолчанию и ест тот же max_tokens:
         # проверочный вызов 12.10.2026 вернул пустой content. Та же ловушка, что в Hybrid 16.08.
-        "thinking": {"type": "disabled"},
+        "reasoning": {"enabled": False},  # у OpenRouter так, а не "thinking"
     }).encode()
     req = urllib.request.Request(
-        "https://api.deepseek.com/chat/completions",
+        "https://openrouter.ai/api/v1/chat/completions",
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         },
     )
     with urllib.request.urlopen(req, timeout=120) as r:

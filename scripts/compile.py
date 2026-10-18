@@ -92,19 +92,22 @@ def _apply_compilation(result: dict) -> int:
     return count
 
 
-# DeepSeek через Anthropic-совместимый endpoint — отдельный кошелёк, не Anthropic-баланс.
+# DeepSeek Flash через Anthropic-совместимый вход OpenRouter (с 18.10.2026; до того —
+# api.deepseek.com/anthropic): по выходу вчетверо дешевле прямого DeepSeek.
 # adaptive-thinking DeepSeek не тянет (съедает весь бюджет на размышление → пустой ответ),
-# поэтому thinking с явным budget_tokens; cache_control DeepSeek игнорирует (не передаём).
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
-COMPILE_MODEL = "deepseek-flash"
+# поэтому thinking с явным budget_tokens; cache_control не передаём.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+COMPILE_MODEL = "deepseek/deepseek-v4.1-flash"
 THINKING_BUDGET = 8000
 
-# DeepSeek V4 Flash, $ за 1M токенов (грубая оценка; кэш не поддерживается)
-_PRICE = {"in": 0.1, "out": 0.3, "cache_write": 0.0, "cache_read": 0.0}
+# Запас на случай, если OpenRouter не вернёт usage.cost: $ за 1M токенов на 18.10.2026
+_PRICE = {"in": 0.065, "out": 0.144, "cache_write": 0.0, "cache_read": 0.0}
 
 
 def _usage_cost(usage) -> float:
-    """Стоимость запроса по токенам (DeepSeek V4 Flash, приблизительно)."""
+    """Стоимость запроса: точная из ответа OpenRouter, иначе оценка по токенам."""
+    if getattr(usage, "cost", None) is not None:
+        return float(usage.cost)
     g = lambda n: getattr(usage, n, 0) or 0
     return (
         g("input_tokens") * _PRICE["in"]
@@ -216,8 +219,8 @@ def compile_daily_log(log_path: Path, state: dict) -> float:
 """
 
     client = anthropic.Anthropic(
-        api_key=os.environ.get("DEEPSEEK_API_KEY"),
-        base_url=DEEPSEEK_BASE_URL,
+        api_key=os.environ.get("OPENROUTER_API_KEY"),
+        base_url=OPENROUTER_BASE_URL,
     )
     system_prompt = _build_system(schema)
 
