@@ -96,10 +96,11 @@ def _apply_compilation(result: dict) -> int:
 # api.deepseek.com/anthropic): по выходу вчетверо дешевле прямого DeepSeek.
 # adaptive-thinking DeepSeek не тянет (съедает весь бюджет на размышление → пустой ответ),
 # поэтому thinking с явным budget_tokens; cache_control не передаём.
-# Самый дешёвый провайдер OpenRouter с потолком цены ($ за 1 млн). Без этого 18.10.2026
-# запросы уходили к InferenceNet по $0,715 за выход вместо $0,144. Копия
-# Hybrid System/scripts/or_routing.py — отдельный репозиторий, менять вместе.
-OR_PROVIDER = {"sort": "price", "max_price": {"prompt": 0.15, "completion": 0.35}}
+# Провайдер OpenRouter: самый быстрый без сильного сжатия (fp8+), не дороже прямого
+# DeepSeek ($ за 1 млн). Почему так — Hybrid System/scripts/or_routing.py; это его копия
+# в отдельном репозитории, менять вместе.
+OR_PROVIDER = {"sort": "throughput", "quantizations": ["fp8", "bf16", "fp16", "fp32"],
+               "max_price": {"prompt": 0.30, "completion": 0.60}}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api"
 COMPILE_MODEL = "deepseek/deepseek-v4.1-flash"
 THINKING_BUDGET = 8000
